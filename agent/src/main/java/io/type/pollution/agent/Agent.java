@@ -12,15 +12,21 @@ import net.bytebuddy.jar.asm.ClassWriter;
 import net.bytebuddy.matcher.ElementMatcher;
 import net.bytebuddy.pool.TypePool;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.instrument.Instrumentation;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -39,6 +45,8 @@ public class Agent {
     private static final int TRACING_DELAY_SECS = Integer.getInteger("io.type.pollution.delay", 0);
     private static final Long REPORT_INTERVAL_SECS = Long.getLong("io.type.pollution.report.interval");
     private static final boolean ENABLE_LAMBDA_INSTRUMENTATION = Boolean.getBoolean("io.type.pollution.lambda");
+    private static final String EXPORT_AFFECTS_TO_FILE = System.getProperty("io.type.pollution.export");
+    public static final boolean TRACE_WITH_DESC = EXPORT_AFFECTS_TO_FILE != null ? true : Boolean.getBoolean("io.type.pollution.trace.withdesc");
 
     public static void premain(String agentArgs, Instrumentation inst) {
         if (ENABLE_FULL_STACK_TRACES) {
@@ -167,6 +175,9 @@ public class Agent {
         summary.append("Date:\t").append(REPORT_TIMESTAMP.format(LocalDateTime.now())).append('\n');
         summary.append("Last:\t").append(last).append('\n');
         CharSequence typePollutionReport = reportOf(TraceInstanceOf.orderedTypePollutionCountersSnapshot(TYPE_UPDATE_COUNT_MIN));
+        if (EXPORT_AFFECTS_TO_FILE != null) {
+            exportAffectedMethods(TraceInstanceOf.orderedTypePollutionCountersSnapshot(TYPE_UPDATE_COUNT_MIN));
+        }
         if (typePollutionReport.length() > 0) {
             summary.append("--------------------------\nType Pollution:\n");
             summary.append(typePollutionReport);
@@ -220,6 +231,34 @@ public class Agent {
                     System.out.println(summary);
                 }
             }
+        }
+    }
+
+    private static void exportAffectedMethods(Collection<TraceInstanceOf.TraceCounter.Snapshot> counters) {
+        if (counters.isEmpty()) {
+            return;
+        }
+        Set<String> affectedMethods = new HashSet<>();
+        StringBuilder sb = new StringBuilder();
+        for (TraceInstanceOf.TraceCounter.Snapshot counter : counters) {
+            for (TraceInstanceOf.TraceCounter.Snapshot.TraceSnapshot stack : counter.traces) {
+                String[] traceContents = stack.trace.split("--");
+                if (affectedMethods.add(traceContents[0])) {
+                    sb.append(traceContents[0]).append("\n");
+                }
+            }
+        }
+        long pid = ProcessHandle.current().pid();
+        String fileName = EXPORT_AFFECTS_TO_FILE;
+        File file = new File(fileName);
+        if (file.exists()) {
+            fileName = fileName + "-" + pid + ".txt";
+        }
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(fileName))) {
+            writer.write(sb.toString());
+            System.out.println("Affected methods are dumped to " + fileName);
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 

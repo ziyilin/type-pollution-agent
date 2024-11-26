@@ -5,6 +5,8 @@ import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.Opcodes;
 import net.bytebuddy.jar.asm.Type;
 
+import static io.type.pollution.agent.Agent.TRACE_WITH_DESC;
+
 public class ByteBuddyUtils {
 
     static class ByteBuddyTypePollutionInstructionAdapter extends net.bytebuddy.jar.asm.MethodVisitor {
@@ -13,21 +15,23 @@ public class ByteBuddyUtils {
         private final String methodName;
 
         private final String classFile;
+        private final String desc;
 
         private String tracePrefix;
 
         private int line;
 
-        protected ByteBuddyTypePollutionInstructionAdapter(int api, net.bytebuddy.jar.asm.MethodVisitor methodVisitor, String classDescriptor, String methodName, String classFile) {
+        protected ByteBuddyTypePollutionInstructionAdapter(int api, net.bytebuddy.jar.asm.MethodVisitor methodVisitor, String classDescriptor, String methodName, String classFile, String desc) {
             super(api, methodVisitor);
             this.classDescriptor = classDescriptor;
             this.methodName = methodName;
             this.classFile = classFile;
+            this.desc = desc;
         }
 
         private String trace() {
             if (tracePrefix == null) {
-                tracePrefix = classDescriptor.replace('/', '.') + "." + methodName + "(" + (classFile != null ? classFile : "Unknown Source)");
+                tracePrefix = classDescriptor.replace('/', '.') + "." + methodName + (TRACE_WITH_DESC ? desc + "--" : "") + "(" + (classFile != null ? classFile : "Unknown Source)");
             }
             if (classFile != null) {
                 return tracePrefix + ":" + line + ")";
@@ -139,7 +143,7 @@ public class ByteBuddyUtils {
         public net.bytebuddy.jar.asm.MethodVisitor visitMethod(int flags, String name,
                                                                String desc, String signature, String[] exceptions) {
             return new ByteBuddyTypePollutionInstructionAdapter(api, super.visitMethod(flags, name, desc,
-                    signature, exceptions), this.name, name, source);
+                    signature, exceptions), this.name, name, source, desc);
         }
     }
 }
