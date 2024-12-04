@@ -17,6 +17,8 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.instrument.Instrumentation;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
@@ -29,6 +31,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.jar.JarFile;
 
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
@@ -47,6 +50,7 @@ public class Agent {
     private static final boolean ENABLE_LAMBDA_INSTRUMENTATION = Boolean.getBoolean("io.type.pollution.lambda");
     private static final String EXPORT_AFFECTS_TO_FILE = System.getProperty("io.type.pollution.export");
     public static final boolean TRACE_WITH_DESC = EXPORT_AFFECTS_TO_FILE != null ? true : Boolean.getBoolean("io.type.pollution.trace.withdesc");
+    private static final boolean INSTALL_BOOTSTRAP = Boolean.getBoolean("io.type.pollution.bootstrap");
 
     public static void premain(String agentArgs, Instrumentation inst) {
         if (ENABLE_FULL_STACK_TRACES) {
@@ -71,6 +75,7 @@ public class Agent {
             for (String startWith : agentArgsValues)
                 acceptedTypes = acceptedTypes.and(nameStartsWith(startWith));
         }
+
         new AgentBuilder.Default()
                 .with(AgentBuilder.Listener.StreamWriting.toSystemError().withErrorsOnly())
                 .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
@@ -110,7 +115,51 @@ public class Agent {
                                                                            int writerFlags, int readerFlags) {
                                 return new ByteBuddyUtils.ByteBuddyTypePollutionClassVisitor(net.bytebuddy.jar.asm.Opcodes.ASM9, classVisitor);
                             }
+
                         })).installOn(inst);
+        if (INSTALL_BOOTSTRAP) {
+            try {
+                //install the java agent jar to bootstrap classloader
+                installBootstrapJar(inst, Agent.class);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            } catch (URISyntaxException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    private static synchronized void installBootstrapJar(Instrumentation inst, Class<?> clazz)
+            throws IOException, URISyntaxException {
+        // we are not using OpenTelemetryAgent.class.getProtectionDomain().getCodeSource() to get agent
+        // location because getProtectionDomain does a permission check with security manager
+        ClassLoader classLoader = clazz.getClassLoader();
+        if (classLoader == null) {
+            classLoader = ClassLoader.getSystemClassLoader();
+        }
+        URL url =
+                classLoader.getResource(clazz.getName().replace('.', '/') + ".class");
+        if (url == null || !"jar".equals(url.getProtocol())) {
+            throw new IllegalStateException("could not get agent jar location from url " + url);
+        }
+        String resourcePath = url.toURI().getSchemeSpecificPart();
+        int protocolSeparatorIndex = resourcePath.indexOf(":");
+        int resourceSeparatorIndex = resourcePath.indexOf("!/");
+        if (protocolSeparatorIndex == -1 || resourceSeparatorIndex == -1) {
+            throw new IllegalStateException("could not get agent location from url " + url);
+        }
+        String agentPath = resourcePath.substring(protocolSeparatorIndex + 1, resourceSeparatorIndex);
+        File javaagentFile = new File(agentPath);
+
+        if (!javaagentFile.isFile()) {
+            throw new IllegalStateException(
+                    "agent jar location doesn't appear to be a file: " + javaagentFile.getAbsolutePath());
+        }
+
+        // verification is very slow before the JIT compiler starts up, which on Java 8 is not until
+        // after premain execution completes
+        JarFile agentJar = new JarFile(javaagentFile, false);
+        inst.appendToBootstrapClassLoaderSearch(agentJar);
     }
 
     private static void printFinalReport() {
